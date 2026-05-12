@@ -1,0 +1,470 @@
+==================================================================
+FRE 6871 - Final Project - Tong Mo
+Run timestamp: 2026-05-08 10:46:03 
+==================================================================
+
+
+
+======== Section 1: Introduction ========
+
+Equity ETFs are the most liquid expression of broad-market views.  This
+project asks two related questions about SPY (the S&P 500 ETF):
+
+  (Q1)  Can we forecast the *magnitude* of next-day log returns from
+        a small set of features built from SPY itself, four cross-asset
+        ETFs (QQQ, IWM, GLD, TLT) and two macro indicators (^VIX, ^TNX)?
+
+  (Q2)  Can we beat a naive coin-flip on next-day *direction* using
+        logistic regression and SVM, and does either of them outperform
+        a pure ARIMA forecast?
+
+Along the way we will (a) clean the data and handle missing values,
+(b) describe the data with statistics and graphs, (c) run formal
+hypothesis tests, and (d) build five different models drawn from the
+course (regression, bootstrap, GLM, time series, clustering, SVM).
+
+
+======== Section 2: Data Acquisition ========
+Loading cached data from /Users/tonymo/Desktop/R_in_Finance/final_project/Tong_Mo_Project_data.csv 
+Series span: 2010-01-04 to 2024-12-30 
+Number of trading days: 3911 
+Columns:
+[1] "SPY" "QQQ" "IWM" "GLD" "TLT" "VIX" "TNX"
+
+
+======== Section 3: Initial exploration ========
+
+str(px):
+An xts object on 2010-01-04 / 2024-12-30 containing: 
+  Data:    double [3911, 7]
+  Columns: SPY, QQQ, IWM, GLD, TLT ... with 2 more columns
+  Index:   Date [3911] (TZ: "UTC")
+NULL
+
+head(px, 3):
+                SPY      QQQ      IWM    GLD      TLT   VIX   TNX
+2010-01-04 84.79637 40.29079 51.36655 109.80 55.92865 20.04 3.841
+2010-01-05 85.02082 40.29079 51.18994 109.70 56.28986 19.35 3.755
+2010-01-06 85.08070 40.04776 51.14177 111.51 55.53635 19.16 3.808
+
+tail(px, 3):
+                SPY      QQQ      IWM    GLD      TLT   VIX   TNX
+2024-12-26 592.7415 526.2640 222.7740 243.07 82.84197 14.73 4.579
+2024-12-27 586.5021 519.2684 219.5264 241.40 82.16278 15.95 4.619
+2024-12-30 579.8091 512.3621 217.8384 240.63 82.82312 17.40 4.545
+
+summary(px):
+     Index                 SPY              QQQ              IWM        
+ Min.   :2010-01-04   Min.   : 77.15   Min.   : 36.99   Min.   : 47.11  
+ 1st Qu.:2013-10-02   1st Qu.:137.20   1st Qu.: 71.39   1st Qu.: 88.54  
+ Median :2017-07-03   Median :211.57   Median :133.03   Median :122.65  
+ Mean   :2017-07-02   Mean   :245.05   Mean   :177.71   Mean   :126.45  
+ 3rd Qu.:2021-03-31   3rd Qu.:359.15   3rd Qu.:282.36   3rd Qu.:166.92  
+ Max.   :2024-12-30   Max.   :597.11   Max.   :533.92   Max.   :238.57  
+                      NA's   :138      NA's   :138      NA's   :138     
+      GLD             TLT              VIX             TNX       
+ Min.   :100.5   Min.   : 55.04   Min.   : 9.14   Min.   :0.499  
+ 1st Qu.:120.6   1st Qu.: 81.42   1st Qu.:13.60   1st Qu.:1.823  
+ Median :138.2   Median : 91.63   Median :16.60   Median :2.376  
+ Mean   :146.6   Mean   : 93.05   Mean   :18.38   Mean   :2.492  
+ 3rd Qu.:168.4   3rd Qu.:100.08   3rd Qu.:21.16   3rd Qu.:3.003  
+ Max.   :257.5   Max.   :143.79   Max.   :82.69   Max.   :4.988  
+ NA's   :138     NA's   :138      NA's   :138     NA's   :140    
+
+
+======== Section 4: Cleaning & missing values ========
+NAs per column before cleaning:
+SPY QQQ IWM GLD TLT VIX TNX 
+138 138 138 138 138 138 140 
+Rows dropped during cleaning: 0 (0.00%)
+NAs per column after cleaning:
+SPY QQQ IWM GLD TLT VIX TNX 
+  0   0   0   0   0   0   0 
+
+
+======== Section 5: Feature engineering ========
+Daily log return summary:
+        mean   sd median
+SPY_ret    0 0.01      0
+QQQ_ret    0 0.01      0
+IWM_ret    0 0.01      0
+GLD_ret    0 0.01      0
+TLT_ret    0 0.01      0
+VIX_ret    0 0.08      0
+TNX_ret    0 0.03      0
+
+Final modelling data set:
+[1] 3890   12
+First 3 rows:
+                spy_ret spy_up     spy_lag1    spy_lag2    spy_lag3    qqq_lag1
+2010-02-02  0.012030191      1  0.015431384 -0.01092841 -0.01153868 0.010923929
+2010-02-03 -0.004994477      0  0.012030191  0.01543138 -0.01092841 0.008974448
+2010-02-04 -0.031352451      0 -0.004994477  0.01203019  0.01543138 0.005483078
+               iwm_lag1     gld_lag1     tlt_lag1     vix_lag1     tnx_lag1
+2010-02-02  0.011742320  0.022305058 -0.009118671 -0.086051818  0.012391753
+2010-02-03  0.010956240  0.007173093  0.002848072 -0.050385089 -0.005213362
+2010-02-04 -0.006690319 -0.003948041 -0.011663262  0.005571084  0.018534212
+           vol20_lag1
+2010-02-02  0.1611757
+2010-02-03  0.1680004
+2010-02-04  0.1682485
+
+Train: 3112 rows (2010-02-02 -> 2022-01-05)
+Valid: 778 rows (2022-01-06 -> 2024-12-30)
+
+
+======== Section 6: Descriptive statistics ========
+
+psych::describe of returns:
+        vars    n mean   sd median trimmed  mad   min  max range  skew kurtosis
+SPY_ret    1 3910    0 0.01      0       0 0.01 -0.12 0.09  0.20 -0.73    12.04
+QQQ_ret    2 3910    0 0.01      0       0 0.01 -0.13 0.08  0.21 -0.52     6.90
+IWM_ret    3 3910    0 0.01      0       0 0.01 -0.14 0.09  0.23 -0.66     8.06
+GLD_ret    4 3910    0 0.01      0       0 0.01 -0.09 0.05  0.14 -0.51     5.09
+TLT_ret    5 3910    0 0.01      0       0 0.01 -0.07 0.07  0.14 -0.02     3.68
+VIX_ret    6 3910    0 0.08      0       0 0.05 -0.35 0.77  1.12  1.20     7.28
+TNX_ret    7 3910    0 0.03      0       0 0.02 -0.35 0.40  0.75  0.26    30.24
+        se
+SPY_ret  0
+QQQ_ret  0
+IWM_ret  0
+GLD_ret  0
+TLT_ret  0
+VIX_ret  0
+TNX_ret  0
+
+
+======== Section 7: Statistical tests ========
+(7.1) Shapiro-Wilk on SPY returns (random subsample):
+
+	Shapiro-Wilk normality test
+
+data:  if (length(spy_vec) > 5000) sample(spy_vec, 5000) else spy_vec
+W = 0.89472, p-value < 2.2e-16
+
+Interpretation: p-value << 0.05 -> reject normality.  Returns are heavy tailed, as expected.
+
+(7.2) Augmented Dickey-Fuller:
+  prices  - p-value: 0.9119 (non-stationary)
+  returns - p-value: 0.01 (stationary)  -> ARIMA on returns, not prices
+
+(7.3) Is the mean SPY log return = 0?
+  t.test     p-value: 0.0037 
+  wilcox     p-value: 0 
+  Both tests reject 0 -> the unconditional drift is positive.
+
+(7.4) Chi-square: weekday vs up/down
+           direction
+weekday      dn  up
+  Friday    357 425
+  Monday    387 395
+  Thursday  365 417
+  Tuesday   366 416
+  Wednesday 349 433
+
+	Pearson's Chi-squared test
+
+data:  tab
+X-squared = 4.1352, df = 4, p-value = 0.388
+
+  -> with p = 0.388 weekday is not predictive of direction.
+
+(7.5) Box-Ljung on returns:
+
+	Box-Ljung test
+
+data:  coredata(ret$SPY_ret)
+X-squared = 159.3, df = 10, p-value < 2.2e-16
+
+  -> p = 0   small autocorrelation present (good news for predictability)
+
+
+======== Section 8.1: Multiple linear regression ========
+
+Call:
+lm(formula = spy_ret ~ spy_lag1 + spy_lag2 + spy_lag3 + qqq_lag1 + 
+    iwm_lag1 + gld_lag1 + tlt_lag1 + vix_lag1 + tnx_lag1 + vol20_lag1, 
+    data = train)
+
+Residuals:
+      Min        1Q    Median        3Q       Max 
+-0.112983 -0.003787  0.000268  0.004802  0.077402 
+
+Coefficients:
+              Estimate Std. Error t value Pr(>|t|)    
+(Intercept)  0.0002940  0.0003337   0.881 0.378430    
+spy_lag1    -0.2232221  0.0655736  -3.404 0.000672 ***
+spy_lag2     0.0723294  0.0179845   4.022 5.91e-05 ***
+spy_lag3    -0.0056554  0.0180712  -0.313 0.754338    
+qqq_lag1    -0.0220066  0.0411632  -0.535 0.592952    
+iwm_lag1     0.0498944  0.0309090   1.614 0.106579    
+gld_lag1     0.0257373  0.0199109   1.293 0.196238    
+tlt_lag1    -0.0630895  0.0392086  -1.609 0.107702    
+vix_lag1    -0.0135880  0.0037676  -3.607 0.000315 ***
+tnx_lag1    -0.0278563  0.0119200  -2.337 0.019506 *  
+vol20_lag1   0.0023806  0.0019794   1.203 0.229182    
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+Residual standard error: 0.01038 on 3101 degrees of freedom
+Multiple R-squared:  0.03088,	Adjusted R-squared:  0.02776 
+F-statistic: 9.881 on 10 and 3101 DF,  p-value: < 2.2e-16
+
+
+stepAIC selected formula:
+spy_ret ~ spy_lag1 + spy_lag2 + iwm_lag1 + tlt_lag1 + vix_lag1 + 
+    tnx_lag1
+
+Summary of selected model:
+
+Call:
+lm(formula = spy_ret ~ spy_lag1 + spy_lag2 + iwm_lag1 + tlt_lag1 + 
+    vix_lag1 + tnx_lag1, data = train)
+
+Residuals:
+      Min        1Q    Median        3Q       Max 
+-0.111523 -0.003833  0.000192  0.004694  0.079169 
+
+Coefficients:
+              Estimate Std. Error t value Pr(>|t|)    
+(Intercept)  0.0006197  0.0001873   3.309 0.000949 ***
+spy_lag1    -0.2468339  0.0450561  -5.478 4.64e-08 ***
+spy_lag2     0.0733091  0.0178428   4.109 4.08e-05 ***
+iwm_lag1     0.0529773  0.0305908   1.732 0.083408 .  
+tlt_lag1    -0.0606473  0.0391304  -1.550 0.121273    
+vix_lag1    -0.0135854  0.0037029  -3.669 0.000248 ***
+tnx_lag1    -0.0295775  0.0117989  -2.507 0.012234 *  
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+Residual standard error: 0.01038 on 3105 degrees of freedom
+Multiple R-squared:  0.02976,	Adjusted R-squared:  0.02788 
+F-statistic: 15.87 on 6 and 3105 DF,  p-value: < 2.2e-16
+
+
+ncvTest (heteroscedasticity):
+Non-constant Variance Score Test 
+Variance formula: ~ fitted.values 
+Chisquare = 53.48786, Df = 1, p = 2.602e-13
+
+[lm] validation RMSE = 0.010952, direction accuracy = 0.495
+
+
+======== Section 8.2: Bootstrap (Sharpe ratio) ========
+
+ORDINARY NONPARAMETRIC BOOTSTRAP
+
+
+Call:
+boot(data = coredata(ret$SPY_ret), statistic = sharpe_stat, R = 1000)
+
+
+Bootstrap Statistics :
+     original      bias    std. error
+t1* 0.7375664 0.002864581   0.2523234
+
+95% confidence intervals (percentile + BCa):
+BOOTSTRAP CONFIDENCE INTERVAL CALCULATIONS
+Based on 1000 bootstrap replicates
+
+CALL : 
+boot.ci(boot.out = boot_out, type = c("perc", "bca"))
+
+Intervals : 
+Level     Percentile            BCa          
+95%   ( 0.2199,  1.2396 )   ( 0.2072,  1.2175 )  
+Calculations and Intervals on Original Scale
+
+
+======== Section 8.3: Logistic regression (NEW - R in Action 13.2) ========
+
+Call:
+glm(formula = spy_up ~ spy_lag1 + spy_lag2 + spy_lag3 + qqq_lag1 + 
+    iwm_lag1 + gld_lag1 + tlt_lag1 + vix_lag1 + tnx_lag1 + vol20_lag1, 
+    family = binomial, data = train)
+
+Coefficients:
+             Estimate Std. Error z value Pr(>|z|)  
+(Intercept)   0.15177    0.06551   2.317   0.0205 *
+spy_lag1    -20.81155   12.88677  -1.615   0.1063  
+spy_lag2      4.09583    3.54254   1.156   0.2476  
+spy_lag3     -1.97688    3.58322  -0.552   0.5812  
+qqq_lag1      4.70505    8.01920   0.587   0.5574  
+iwm_lag1      1.51873    6.01118   0.253   0.8005  
+gld_lag1      3.63512    3.87510   0.938   0.3482  
+tlt_lag1      0.33625    7.71952   0.044   0.9653  
+vix_lag1     -0.97258    0.73888  -1.316   0.1881  
+tnx_lag1      0.21864    2.37539   0.092   0.9267  
+vol20_lag1    0.09179    0.39419   0.233   0.8159  
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+(Dispersion parameter for binomial family taken to be 1)
+
+    Null deviance: 4294.7  on 3111  degrees of freedom
+Residual deviance: 4282.9  on 3101  degrees of freedom
+AIC: 4304.9
+
+Number of Fisher Scoring iterations: 4
+
+
+Logistic regression confusion matrix:
+      predicted
+actual  dn  up
+    dn  25 357
+    up  22 374
+[glm] validation accuracy = 0.513, AUC = 0.499
+
+
+======== Section 8.4: ARIMA forecast ========
+auto.arima selected model:
+Series: spy_train_xts 
+ARIMA(5,0,5) with non-zero mean 
+
+Coefficients:
+          ar1     ar2      ar3      ar4     ar5      ma1      ma2     ma3
+      -0.0918  0.5206  -0.4901  -0.5887  0.2985  -0.0159  -0.4459  0.5129
+s.e.   0.4516  0.1682   0.2434   0.1772  0.3451   0.4487   0.1350  0.2149
+         ma4      ma5   mean
+      0.4646  -0.3078  5e-04
+s.e.  0.1869   0.2909  2e-04
+
+sigma^2 = 0.0001061:  log likelihood = 9829.33
+AIC=-19634.65   AICc=-19634.55   BIC=-19562.14
+
+In-sample accuracy:
+                       ME      RMSE         MAE MPE MAPE      MASE        ACF1
+Training set 4.015251e-06 0.0102806 0.006723078 NaN  Inf 0.6682373 0.002038498
+[arima] validation RMSE = 0.010819, direction accuracy = 0.512
+
+
+======== Section 8.5: K-means clustering of volatility regimes ========
+*** : The Hubert index is a graphical method of determining the number of clusters.
+                In the plot of Hubert index, we seek a significant knee that corresponds to a 
+                significant increase of the value of the measure i.e the significant peak in Hubert
+                index second differences plot. 
+ 
+*** : The D index is a graphical method of determining the number of clusters. 
+                In the plot of D index, we seek a significant knee (the significant peak in Dindex
+                second differences plot) that corresponds to a significant increase of the value of
+                the measure. 
+ 
+******************************************************************* 
+* Among all indices:                                                
+* 11 proposed 2 as the best number of clusters 
+* 3 proposed 3 as the best number of clusters 
+* 4 proposed 4 as the best number of clusters 
+* 4 proposed 5 as the best number of clusters 
+* 2 proposed 6 as the best number of clusters 
+
+                   ***** Conclusion *****                            
+ 
+* According to the majority rule, the best number of clusters is  2 
+ 
+ 
+******************************************************************* 
+
+NbClust majority vote: k = 2 
+
+fit.km$size:
+[1] 629 153
+
+fit.km$centers:
+    mean     sd
+1  0.283 -0.296
+2 -1.163  1.219
+
+Mean return / volatility by regime:
+  regime         mean          sd
+1      1  0.001770708 0.006462242
+2      2 -0.004748017 0.016472778
+
+
+======== Section 8.6: SVM classification ========
+
+Call:
+svm(formula = spy_up ~ spy_lag1 + spy_lag2 + spy_lag3 + qqq_lag1 + 
+    iwm_lag1 + gld_lag1 + tlt_lag1 + vix_lag1 + tnx_lag1 + vol20_lag1, 
+    data = train, probability = TRUE)
+
+
+Parameters:
+   SVM-Type:  C-classification 
+ SVM-Kernel:  radial 
+       cost:  1 
+
+Number of Support Vectors:  2917
+
+ ( 1491 1426 )
+
+
+Number of Classes:  2 
+
+Levels: 
+ dn up
+
+
+
+
+SVM confusion matrix:
+      predicted
+actual  dn  up
+    dn   0 382
+    up   0 396
+[svm] validation accuracy = 0.509, AUC = 0.513
+
+
+======== Section 9: Model comparison ========
+           model    target   metric      value secondary secondary_label
+1 OLS (stepwise)    return     RMSE 0.01095195 0.4948586         dir.Acc
+2          ARIMA    return     RMSE 0.01081944 0.5115681         dir.Acc
+3       Logistic direction Accuracy 0.51285347 0.4987506             AUC
+4            SVM direction Accuracy 0.50899743 0.5127717             AUC
+
+
+======== Section 10: Conclusion ========
+
+1. Magnitude prediction is hard.  The OLS model (RMSE = 0.01095) and the
+   ARIMA model (RMSE = 0.01082) both produce a daily forecast error that
+   is essentially the size of one ordinary daily move.  In other words,
+   neither model knows much about *how big* tomorrow's move will be.
+
+2. Direction prediction is only marginally tractable.  Logistic
+   regression reaches accuracy = 0.513 / AUC = 0.499 and the SVM reaches
+   0.509 / 0.513 on the held-out 2022-2024 sample.  Both sit close to the
+   50% coin-flip baseline; that is consistent with the literature on
+   short-horizon equity-index predictability (very weak signal, mostly
+   crowded out by transaction costs in practice).
+
+3. The k-means volatility-regime clustering selects k = 2 via the
+   NbClust majority rule.  Regime 1 has positive mean weekly return
+   with low volatility; regime 2 has *negative* mean weekly return with
+   markedly higher volatility.  This 'panic vs calm' dichotomy is the
+   most actionable finding here: position-sizing strategies that lever
+   down in the high-vol regime are well documented to improve
+   risk-adjusted performance.
+
+4. The statistical tests support the modelling choices.  Shapiro-Wilk
+   rejects normality of returns; ADF rejects a unit root in returns
+   but not in prices, confirming that ARIMA and logistic models should
+   be built on returns, not levels; both t.test and wilcox.test reject
+   a zero mean (positive drift); chi-square does not detect a strong
+   weekday effect; Box-Ljung detects a small but significant amount of
+   serial correlation, consistent with the small AUCs we see for the
+   classification models.
+
+5. Future work: add technical indicators (RSI, MACD), more cross-asset
+   features (a credit spread, the dollar index DXY), longer look-backs,
+   and try gradient-boosted trees and recurrent networks.  A walk-
+   forward evaluation rather than a single train/validate split would
+   also be more honest for a strategy decision.
+
+Notes
+   * Exhibits and the run-time numbers above are reproducible: rerun
+     'Rscript Tong_Mo_Project.R' from the project folder.  The first
+     run downloads the data; subsequent runs read it from
+     'Tong_Mo_Project_data.csv'.
+   * All references to 'R in Action' are by chapter / section in the
+     comments above at first use of every technique.
+null device 
+          1 

@@ -1,0 +1,15 @@
+# Knit / R Markdown intermediate artefacts (auto-regenerated on render)
+Tong_Mo_Project_cache/
+Tong_Mo_Project_files/
+*.knit.md
+*.utf8.md
+
+# R / RStudio
+.Rhistory
+.Rproj.user/
+.Rdata
+.Ruserdata
+
+# OS
+.DS_Store
+Thumbs.db

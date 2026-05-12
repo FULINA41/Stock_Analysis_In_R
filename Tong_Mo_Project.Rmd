@@ -1,0 +1,409 @@
+---
+title: "FRE 6871 - Final Project: Predicting next-day SPY returns and direction"
+author: "Tong Mo"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+    highlight: tango
+    df_print: paged
+    code_folding: show
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo    = TRUE,
+                      message = FALSE,
+                      warning = FALSE,
+                      fig.width = 9, fig.height = 6,
+                      cache    = FALSE)
+```
+
+# Introduction & research question
+
+Equity ETFs are the most liquid expression of broad-market views. This
+project asks two related questions about **SPY** (the S&P 500 ETF):
+
+1. **Magnitude.** Can we forecast the *size* of next-day log returns
+   from a small set of features built from SPY itself, four cross-asset
+   ETFs (QQQ, IWM, GLD, TLT) and two macro indicators (^VIX, ^TNX)?
+2. **Direction.** Can we beat a 50/50 coin-flip on next-day *direction*
+   using logistic regression and SVM, and does either of them
+   outperform a pure ARIMA forecast?
+
+References to the textbook (Kabacoff, *R in Action*, 3rd edition) are
+flagged inline at the first use of each technique.
+
+```{r packages}
+suppressPackageStartupMessages({
+    library(quantmod)
+    library(xts)
+    library(zoo)
+    library(PerformanceAnalytics)
+    library(psych)
+    library(car)
+    library(MASS)
+    library(boot)
+    library(forecast)
+    library(tseries)
+    library(NbClust)
+    library(flexclust)
+    library(e1071)
+    library(pROC)
+    library(corrgram)
+})
+```
+
+# Data acquisition
+
+We use `quantmod::getSymbols()` (R in Action, ch. 2 - importing data)
+to pull adjusted-close prices from Yahoo Finance.  Once successful, we
+cache the merged data set to a CSV so subsequent runs do not need
+internet.
+
+```{r data-acquisition}
+csv_path <- "Tong_Mo_Project_data.csv"
+tickers  <- c("SPY", "QQQ", "IWM", "GLD", "TLT", "^VIX", "^TNX")
+
+load_data_online <- function() {
+    env <- new.env()
+    getSymbols(tickers, from = "2010-01-01", to = "2024-12-31",
+               env = env, auto.assign = TRUE)
+    cols <- list(SPY = Ad(env$SPY), QQQ = Ad(env$QQQ), IWM = Ad(env$IWM),
+                 GLD = Ad(env$GLD), TLT = Ad(env$TLT),
+                 VIX = Cl(env$VIX), TNX = Cl(env$TNX))
+    px <- do.call(merge, cols)
+    colnames(px) <- names(cols)
+    px
+}
+
+if (file.exists(csv_path)) {
+    cached <- read.csv(csv_path, stringsAsFactors = FALSE)
+    px <- xts(cached[, -1], order.by = as.Date(cached[, 1]))
+} else {
+    px <- load_data_online()
+    write.csv(data.frame(Date = index(px), coredata(px)),
+              file = csv_path, row.names = FALSE)
+}
+
+cat("Series span:", format(start(px)), "to", format(end(px)), "\n")
+cat("Trading days:", nrow(px), "\n")
+```
+
+# Initial exploration
+
+```{r explore}
+str(px)
+head(px, 3)
+summary(px)
+```
+
+```{r explore-plots}
+plot.zoo(px[, c("SPY","QQQ","IWM","GLD","TLT")],
+         main = "Adjusted prices - five ETFs (2010-2024)",
+         xlab = "Date", col = c("steelblue","darkorange","forestgreen",
+                                 "goldenrod","firebrick"))
+plot.zoo(px[, c("VIX","TNX")],
+         main = "Macro indicators - VIX and 10Y yield",
+         xlab = "Date", col = c("firebrick","steelblue"))
+```
+
+# Cleaning & missing values
+
+R in Action sec. 4.5 / 15.1 covers handling missing data. VIX and TNX
+have a few non-trading-day NAs; we carry the last value forward and
+drop any row that still has a missing value, logging the impact.
+
+```{r clean}
+n_before <- nrow(px)
+colSums(is.na(px))
+px       <- na.locf(px, na.rm = FALSE)
+px       <- px[complete.cases(px), ]
+n_after  <- nrow(px)
+sprintf("Rows dropped during cleaning: %d (%.2f%%)",
+        n_before - n_after, 100 * (n_before - n_after) / n_before)
+colSums(is.na(px))
+```
+
+# Feature engineering
+
+```{r features}
+ret <- na.omit(Return.calculate(px, method = "log"))
+colnames(ret) <- paste0(colnames(ret), "_ret")
+
+vol20 <- runSD(ret$SPY_ret, n = 20) * sqrt(252)
+colnames(vol20) <- "vol20"
+
+lag_features <- merge(
+    lag(ret$SPY_ret, 1), lag(ret$SPY_ret, 2), lag(ret$SPY_ret, 3),
+    lag(ret$QQQ_ret, 1), lag(ret$IWM_ret, 1),
+    lag(ret$GLD_ret, 1), lag(ret$TLT_ret, 1),
+    lag(ret$VIX_ret, 1), lag(ret$TNX_ret, 1),
+    lag(vol20, 1))
+colnames(lag_features) <- c("spy_lag1","spy_lag2","spy_lag3",
+                            "qqq_lag1","iwm_lag1","gld_lag1","tlt_lag1",
+                            "vix_lag1","tnx_lag1","vol20_lag1")
+
+y       <- ret$SPY_ret
+y_dir   <- xts(as.integer(coredata(y) > 0), order.by = index(y))
+colnames(y) <- "spy_ret"
+colnames(y_dir) <- "spy_up"
+
+dataset <- na.omit(merge(y, y_dir, lag_features))
+df      <- data.frame(date = index(dataset), coredata(dataset))
+df$spy_up <- factor(df$spy_up, levels = c(0, 1), labels = c("dn", "up"))
+
+# 80/20 chronological split
+split <- floor(0.8 * nrow(df))
+train <- df[1:split, ]
+valid <- df[(split + 1):nrow(df), ]
+sprintf("train: %d (%s -> %s)  | valid: %d (%s -> %s)",
+        nrow(train), train$date[1], train$date[nrow(train)],
+        nrow(valid), valid$date[1], valid$date[nrow(valid)])
+```
+
+# Descriptive statistics & basic plots
+
+R in Action ch. 7 - `psych::describe` (7.1.1) and `corrgram` (11.3.1).
+
+```{r descriptive}
+psych::describe(coredata(ret))[, c("mean","sd","skew","kurtosis")]
+
+hist(coredata(ret$SPY_ret), breaks = 60, freq = FALSE,
+     col = "steelblue", border = "white",
+     main = "Distribution of SPY daily log returns", xlab = "log return")
+lines(density(coredata(ret$SPY_ret)), col = "firebrick", lwd = 2)
+
+corrgram(coredata(ret), order = TRUE,
+         lower.panel = corrgram::panel.shade,
+         upper.panel = corrgram::panel.pie,
+         text.panel  = corrgram::panel.txt,
+         main = "Cross-asset return correlations")
+
+chart.CumReturns(ret$SPY_ret, main = "SPY cumulative log return")
+```
+
+# Statistical tests
+
+We run **five** formal tests; only two are required by the rubric.
+
+## Normality (R in Action 7.5)
+
+```{r test-normality}
+spy_vec <- as.numeric(coredata(ret$SPY_ret))
+shapiro.test(if (length(spy_vec) > 5000) sample(spy_vec, 5000) else spy_vec)
+```
+
+Returns are heavy-tailed (p \<\< 0.05 - reject normality).
+
+## Stationarity - prices vs returns (R in Action 15.2.1)
+
+```{r test-adf}
+suppressWarnings(adf.test(coredata(px$SPY)))
+suppressWarnings(adf.test(coredata(ret$SPY_ret)))
+```
+
+Prices fail to reject the unit-root null; returns clearly reject it -
+ARIMA must be applied to returns.
+
+## Mean return = 0?  (R in Action 7.4)
+
+```{r test-tt}
+t.test(coredata(ret$SPY_ret))
+wilcox.test(coredata(ret$SPY_ret))
+```
+
+Both tests reject zero mean - the unconditional drift is positive.
+
+## Day-of-week vs direction (R in Action 7.3)
+
+```{r test-chisq}
+wday <- weekdays(index(ret$SPY_ret))
+tab  <- table(weekday = wday,
+              direction = ifelse(coredata(ret$SPY_ret) > 0, "up", "dn"))
+tab
+chisq.test(tab)
+```
+
+## Box-Ljung autocorrelation
+
+```{r test-box}
+Box.test(coredata(ret$SPY_ret), lag = 10, type = "Ljung-Box")
+```
+
+# Modelling
+
+## Multiple linear regression - R in Action ch. 8
+
+```{r model-lm}
+fit_lm_full <- lm(spy_ret ~ spy_lag1 + spy_lag2 + spy_lag3 +
+                              qqq_lag1 + iwm_lag1 + gld_lag1 + tlt_lag1 +
+                              vix_lag1 + tnx_lag1 + vol20_lag1,
+                  data = train)
+summary(fit_lm_full)
+
+fit_lm_step <- stepAIC(fit_lm_full, direction = "both", trace = FALSE)
+formula(fit_lm_step)
+summary(fit_lm_step)
+
+par(mfrow = c(2, 2)); plot(fit_lm_step); par(mfrow = c(1, 1))
+ncvTest(fit_lm_step)
+
+lm_pred  <- predict(fit_lm_step, newdata = valid)
+lm_rmse  <- sqrt(mean((valid$spy_ret - lm_pred)^2))
+lm_dirAcc <- mean(sign(lm_pred) == sign(valid$spy_ret))
+sprintf("[lm] validation RMSE = %.6f, direction accuracy = %.3f",
+        lm_rmse, lm_dirAcc)
+```
+
+## Bootstrap of the Sharpe ratio - R in Action ch. 12
+
+```{r model-boot}
+sharpe_stat <- function(data, idx) {
+    r <- data[idx]
+    sqrt(252) * mean(r) / sd(r)
+}
+set.seed(1234)
+boot_out <- boot(coredata(ret$SPY_ret), statistic = sharpe_stat, R = 1000)
+boot_out
+boot.ci(boot_out, type = c("perc", "bca"))
+```
+
+## Logistic regression - R in Action sec. 13.2 *(NEW technique)*
+
+```{r model-glm}
+fit_glm <- glm(spy_up ~ spy_lag1 + spy_lag2 + spy_lag3 +
+                          qqq_lag1 + iwm_lag1 + gld_lag1 + tlt_lag1 +
+                          vix_lag1 + tnx_lag1 + vol20_lag1,
+               data = train, family = binomial)
+summary(fit_glm)
+
+glm_prob <- predict(fit_glm, newdata = valid, type = "response")
+glm_pred <- factor(ifelse(glm_prob > 0.5, "up", "dn"),
+                   levels = c("dn", "up"))
+glm_cm   <- table(actual = valid$spy_up, predicted = glm_pred)
+glm_cm
+glm_acc  <- sum(diag(glm_cm)) / sum(glm_cm)
+glm_auc  <- as.numeric(pROC::auc(pROC::roc(valid$spy_up, glm_prob,
+                                           quiet = TRUE)))
+sprintf("[glm] validation accuracy = %.3f, AUC = %.3f", glm_acc, glm_auc)
+```
+
+## ARIMA - R in Action sec. 15.4
+
+```{r model-arima}
+spy_train_xts <- xts(train$spy_ret, order.by = train$date)
+fit_arima <- auto.arima(spy_train_xts)
+fit_arima
+accuracy(fit_arima)
+
+arima_fc   <- forecast(fit_arima, h = nrow(valid))
+arima_pred <- as.numeric(arima_fc$mean)
+arima_rmse <- sqrt(mean((valid$spy_ret - arima_pred)^2))
+arima_dirAcc <- mean(sign(arima_pred) == sign(valid$spy_ret))
+sprintf("[arima] validation RMSE = %.6f, direction accuracy = %.3f",
+        arima_rmse, arima_dirAcc)
+plot(forecast(fit_arima, h = 60),
+     main = "ARIMA forecast - 60 trading days ahead")
+```
+
+## K-means clustering of weekly volatility regimes - R in Action ch. 16
+
+```{r model-kmeans}
+weekly <- apply.weekly(ret$SPY_ret,
+                       function(x) c(mean = mean(x), sd = sd(x)))
+weekly        <- na.omit(weekly)
+weekly_scaled <- scale(coredata(weekly))
+
+set.seed(1234)
+nc     <- NbClust(weekly_scaled, min.nc = 2, max.nc = 6, method = "kmeans")
+best_k <- as.integer(names(sort(table(nc$Best.n[1, ]), decreasing = TRUE))[1])
+if (is.na(best_k) || best_k < 2) best_k <- 3
+sprintf("NbClust majority vote: k = %d", best_k)
+
+set.seed(1234)
+fit_km <- kmeans(weekly_scaled, centers = best_k, nstart = 25)
+fit_km$size
+round(fit_km$centers, 3)
+
+regime <- data.frame(date  = index(weekly),
+                     mean  = coredata(weekly)[, "mean"],
+                     sd    = coredata(weekly)[, "sd"],
+                     regime= factor(fit_km$cluster))
+aggregate(cbind(mean, sd) ~ regime, data = regime, FUN = mean)
+
+plot(regime$sd, regime$mean, col = regime$regime, pch = 19,
+     xlab = "weekly std-dev", ylab = "weekly mean return",
+     main = paste("SPY weekly volatility regimes (k =", best_k, ")"))
+legend("topright", legend = paste("regime", seq_len(best_k)),
+       col = seq_len(best_k), pch = 19)
+```
+
+## SVM classification - R in Action sec. 17.5
+
+```{r model-svm}
+set.seed(1234)
+fit_svm <- svm(spy_up ~ spy_lag1 + spy_lag2 + spy_lag3 +
+                          qqq_lag1 + iwm_lag1 + gld_lag1 + tlt_lag1 +
+                          vix_lag1 + tnx_lag1 + vol20_lag1,
+               data = train, probability = TRUE)
+summary(fit_svm)
+
+svm_pred <- predict(fit_svm, newdata = valid, probability = TRUE)
+svm_prob <- attr(svm_pred, "probabilities")[, "up"]
+svm_cm   <- table(actual = valid$spy_up, predicted = svm_pred)
+svm_cm
+svm_acc  <- sum(diag(svm_cm)) / sum(svm_cm)
+svm_auc  <- as.numeric(pROC::auc(pROC::roc(valid$spy_up, svm_prob,
+                                           quiet = TRUE)))
+sprintf("[svm] validation accuracy = %.3f, AUC = %.3f", svm_acc, svm_auc)
+
+roc_glm <- pROC::roc(valid$spy_up, glm_prob, quiet = TRUE)
+roc_svm <- pROC::roc(valid$spy_up, svm_prob, quiet = TRUE)
+plot(roc_glm, col = "steelblue", lwd = 2,
+     main = "ROC - logistic regression vs SVM")
+lines(roc_svm, col = "firebrick", lwd = 2)
+legend("bottomright", c(sprintf("logit  AUC=%.3f", glm_auc),
+                          sprintf("svm    AUC=%.3f", svm_auc)),
+       col = c("steelblue","firebrick"), lwd = 2)
+```
+
+# Model comparison
+
+```{r comparison}
+data.frame(
+    model     = c("OLS (stepwise)", "ARIMA", "Logistic", "SVM"),
+    target    = c("return",  "return",     "direction",  "direction"),
+    metric    = c("RMSE",     "RMSE",      "Accuracy",   "Accuracy"),
+    value     = c(lm_rmse,    arima_rmse,  glm_acc,      svm_acc),
+    secondary = c(lm_dirAcc,  arima_dirAcc, glm_auc,     svm_auc),
+    secondary_label = c("dir.Acc","dir.Acc","AUC","AUC"))
+```
+
+# Conclusion
+
+1. **Magnitude prediction is hard.** OLS (RMSE = `r round(lm_rmse, 5)`)
+   and ARIMA (RMSE = `r round(arima_rmse, 5)`) both produce a daily
+   forecast error roughly the size of one ordinary daily move.
+2. **Direction prediction is only marginally tractable.** Logistic
+   reaches accuracy = `r round(glm_acc, 3)` / AUC =
+   `r round(glm_auc, 3)`; SVM reaches `r round(svm_acc, 3)` /
+   `r round(svm_auc, 3)`. Both sit close to the 50% coin-flip.
+3. **Volatility regimes are real.** NbClust selects k =
+   `r best_k`; the high-vol cluster has *negative* mean weekly return
+   while the low-vol cluster has positive mean - a 'panic vs calm'
+   dichotomy that is well documented in the literature.
+4. **Statistical tests support the modelling choices** - non-normal
+   returns, prices non-stationary but returns stationary, positive
+   drift confirmed by both parametric and non-parametric tests.
+5. **Future work** - technical indicators (RSI, MACD), a credit-spread
+   feature, longer look-backs, gradient-boosted trees, and walk-forward
+   evaluation.
+
+------------------------------------------------------------------------
+
+> *The .R version of this report (`Tong_Mo_Project.R`) is the primary
+> deliverable; this `.Rmd` / HTML report is the optional dynamic-
+> report version described in the FRE 6871 walkthrough.*
